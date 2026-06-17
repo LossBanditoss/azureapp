@@ -50,8 +50,6 @@ npm run dev
 
 Server bude spuštěn na `http://localhost:3000`
 
-## API Endpoints
-
 ### Azure / Docker
 
 Docker image uz obsahuje LibreOffice. V Azure Container Apps tedy neni potreba LibreOffice instalovat rucne na hostiteli, musi byt jen soucasti image buildu z Dockerfile.
@@ -64,6 +62,13 @@ PORT=3000
 LIBREOFFICE_PATH=/usr/bin/soffice
 MAX_FILE_SIZE_MB=50
 CALLBACK_TIMEOUT_MS=15000
+```
+
+Doporucene auth promene pro test:
+
+```text
+BASIC_AUTH_USER=testuser
+BASIC_AUTH_PASS=test1234
 ```
 
 ## API Endpoints
@@ -80,8 +85,53 @@ Zdravotnostni check.
 
 ---
 
-### 2. `/extract-placeholders` (POST)
-Extrahuje placeholders z base64 Word souboru.
+### 2. `/api/template/extract-variables` (POST)
+PBI endpoint pro ServiceNow. Prijme Base64 DOCX a vrati seznam extrahovanych promennych.
+
+Authorization (test):
+- Basic Auth (`BASIC_AUTH_USER` / `BASIC_AUTH_PASS`)
+
+Authorization (alternativa):
+- Bearer token (`EXTRACTION_AUTH_TOKEN`)
+
+**Request:**
+```json
+{
+  "conversionId": "generated_conversion_id",
+  "recordSysId": "mass_mailing_sys_id",
+  "attachmentSysId": "word_template_attachment_sys_id",
+  "fileName": "CoverLetterTemplate.docx",
+  "encodedWord": "base64_encoded_docx"
+}
+```
+
+**Response success:**
+```json
+{
+  "conversionId": "generated_conversion_id",
+  "status": "success",
+  "variables": [
+    "System_Account_Manager",
+    "u_relevant_partner",
+    "u_new_target_system.u_sys_srs_status"
+  ]
+}
+```
+
+**Response error:**
+```json
+{
+  "conversionId": "generated_conversion_id",
+  "status": "failed",
+  "errorCode": "DOCX_PROCESSING_FAILED",
+  "message": "The uploaded Word document could not be processed."
+}
+```
+
+---
+
+### 3. `/extract-placeholders` (POST)
+Jednoduchy helper endpoint pro lokalni test extrakce mimo PBI payload.
 
 **Request:**
 ```json
@@ -103,7 +153,7 @@ Extrahuje placeholders z base64 Word souboru.
 
 ---
 
-### 3. `/generate-pdf-batch` (POST)
+### 4. `/generate-pdf-batch` (POST)
 Prijme DOCX sablonu, data objekt nebo pole objektu a callback URL. Pro kazdou polozku vyrenderuje PDF a posle ho na callback.
 
 **Request:**
@@ -138,7 +188,21 @@ Prijme DOCX sablonu, data objekt nebo pole objektu a callback URL. Pro kazdou po
 
 ## Příklady Použití
 
-### Node.js / JavaScript
+### ServiceNow / PBI request (cURL)
+```bash
+curl -X POST http://localhost:3000/api/template/extract-variables \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Basic dGVzdHVzZXI6dGVzdDEyMzQ=" \
+  -d '{
+    "conversionId":"generated_conversion_id",
+    "recordSysId":"mass_mailing_sys_id",
+    "attachmentSysId":"word_template_attachment_sys_id",
+    "fileName":"CoverLetterTemplate.docx",
+    "encodedWord":"base64_encoded_docx"
+  }'
+```
+
+### Node.js / JavaScript (helper endpoint)
 ```javascript
 const fs = require('fs');
 const axios = require('axios');
@@ -164,7 +228,7 @@ convertFile();
 
 ### cURL
 ```bash
-# Extrakce placeholders
+# Extrakce placeholders (helper endpoint)
 curl -X POST http://localhost:3000/extract-placeholders \
   -H "Content-Type: application/json" \
   -d '{"file":"'$(base64 document.docx)'"}' \
