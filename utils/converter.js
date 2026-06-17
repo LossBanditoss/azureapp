@@ -2,11 +2,29 @@ const libre = require('libreoffice-convert');
 const mammoth = require('mammoth');
 const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
+const path = require('path');
+
+let sofficeBinaryPaths = [];
 
 function setLibreOfficePath(libreOfficePath) {
-  if (libreOfficePath && typeof libre.setLibreOfficePath === 'function') {
-    libre.setLibreOfficePath(libreOfficePath);
+  if (!libreOfficePath) {
+    sofficeBinaryPaths = [];
+    return;
   }
+
+  const normalizedPath = libreOfficePath.replace(/\\/g, '/');
+  const isBinaryPath = /soffice(\.exe)?$/i.test(normalizedPath) || /libreoffice$/i.test(normalizedPath);
+
+  if (isBinaryPath) {
+    sofficeBinaryPaths = [normalizedPath];
+    return;
+  }
+
+  sofficeBinaryPaths = [
+    path.posix.join(normalizedPath, 'soffice'),
+    path.posix.join(normalizedPath, 'soffice.exe'),
+    path.posix.join(normalizedPath, 'libreoffice')
+  ];
 }
 
 /**
@@ -18,9 +36,10 @@ async function convertDocToPdf(fileBuffer) {
   return new Promise((resolve, reject) => {
     // Determine file extension
     const ext = detectFileType(fileBuffer);
+    const options = sofficeBinaryPaths.length ? { sofficeBinaryPaths } : undefined;
     
     try {
-      libre.convert(fileBuffer, `.${ext}`, '.pdf', undefined, (err, result) => {
+      libre.convert(fileBuffer, `.${ext}`, '.pdf', options, (err, result) => {
         if (err) {
           reject(new Error(`LibreOffice conversion error: ${err.message}`));
         } else {
@@ -55,21 +74,24 @@ async function extractVariables(fileBuffer) {
     // Extract variables with different patterns
     const variables = new Set();
 
+    // Variable token supports dot-walking paths like a.b.c
+    const variableToken = '([a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)*)';
+
     // Pattern 1: {{variable_name}}
-    const pattern1 = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
+    const pattern1 = new RegExp(`\\{\\{${variableToken}\\}\\}`, 'g');
     let match;
     while ((match = pattern1.exec(text)) !== null) {
       variables.add(match[1]);
     }
 
     // Pattern 2: ${variable_name}
-    const pattern2 = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+    const pattern2 = new RegExp(`\\$\\{${variableToken}\\}`, 'g');
     while ((match = pattern2.exec(text)) !== null) {
       variables.add(match[1]);
     }
 
     // Pattern 3: $variable_name (simple dollar sign)
-    const pattern3 = /\$([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+    const pattern3 = new RegExp(`\\$${variableToken}\\b`, 'g');
     while ((match = pattern3.exec(text)) !== null) {
       variables.add(match[1]);
     }
@@ -81,7 +103,7 @@ async function extractVariables(fileBuffer) {
     }
 
     // Pattern 5: {variable_name} (single curly braces)
-    const pattern5 = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+    const pattern5 = new RegExp(`\\{${variableToken}\\}`, 'g');
     while ((match = pattern5.exec(text)) !== null) {
       variables.add(match[1]);
     }

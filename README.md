@@ -1,15 +1,16 @@
 # Word to PDF Converter & Variable Extractor
 
-Node.js aplikace pro konverzi Word dokumentů do PDF a extrakci variable placeholders.
+Node.js aplikace pro extrakci placeholders z Word dokumentu a asynchronni generovani PDF z DOCX sablony.
 
 ## Features
 
-- ✅ Konverze Word (.doc, .docx) do PDF
-- ✅ Extrakce variable placeholders z dokumentů
-- ✅ Podpora více vzorů proměnných ({{var}}, ${var}, $var, [VAR])
-- ✅ Base64 vstup a výstup
-- ✅ JSON response formát
-- ✅ REST API s Express
+- ✅ Konverze Word (.doc, .docx) do PDF pres LibreOffice
+- ✅ Extrakce variable placeholders z dokumentu
+- ✅ Asynchronni batch generovani PDF z JSON dat
+- ✅ Callback odeslani vygenerovanych PDF na dalsi REST endpoint
+- ✅ Podpora vice vzoru promennych ({{var}}, ${var}, $var, [VAR], {var})
+- ✅ Base64 vstup a JSON response format
+- ✅ Pripraveno pro Windows i Azure Container Apps
 
 ## Instalace
 
@@ -51,8 +52,24 @@ Server bude spuštěn na `http://localhost:3000`
 
 ## API Endpoints
 
+### Azure / Docker
+
+Docker image uz obsahuje LibreOffice. V Azure Container Apps tedy neni potreba LibreOffice instalovat rucne na hostiteli, musi byt jen soucasti image buildu z Dockerfile.
+
+Doporucene environment variables v Azure:
+
+```text
+NODE_ENV=production
+PORT=3000
+LIBREOFFICE_PATH=/usr/bin/soffice
+MAX_FILE_SIZE_MB=50
+CALLBACK_TIMEOUT_MS=15000
+```
+
+## API Endpoints
+
 ### 1. `/health` (GET)
-Zdravotnostní check.
+Zdravotnostni check.
 
 **Response:**
 ```json
@@ -63,8 +80,8 @@ Zdravotnostní check.
 
 ---
 
-### 2. `/convert-and-extract` (POST)
-Konvertuje Word do PDF a extrahuje proměnné.
+### 2. `/extract-placeholders` (POST)
+Extrahuje placeholders z base64 Word souboru.
 
 **Request:**
 ```json
@@ -78,56 +95,42 @@ Konvertuje Word do PDF a extrahuje proměnné.
 {
   "success": true,
   "data": {
-    "variables": ["variable1", "variable2", "USER_NAME"],
-    "pdfBase64": "JVBERi0xLjQK...",
-    "pdfSize": 45632
+    "placeholders": ["invoiceNumber", "name", "USER_ID"],
+    "count": 3
   }
 }
 ```
 
 ---
 
-### 3. `/extract-variables` (POST)
-Extrahuje jen proměnné z dokumentu.
+### 3. `/generate-pdf-batch` (POST)
+Prijme DOCX sablonu, data objekt nebo pole objektu a callback URL. Pro kazdou polozku vyrenderuje PDF a posle ho na callback.
 
 **Request:**
 ```json
 {
-  "file": "base64_encoded_file_content"
+  "file": "base64_encoded_file_content",
+  "data": [
+    {
+      "name": "Jan Novak",
+      "invoiceNumber": "INV-001"
+    },
+    {
+      "name": "Eva Svobodova",
+      "invoiceNumber": "INV-002"
+    }
+  ],
+  "callbackUrl": "https://example.service-now.com/api/x_scope/pdf/callback",
+  "callbackHeaders": {
+    "Authorization": "Bearer token"
+  }
 }
 ```
 
 **Response:**
 ```json
 {
-  "success": true,
-  "data": {
-    "variables": ["variable1", "variable2"],
-    "count": 2
-  }
-}
-```
-
----
-
-### 4. `/convert-to-pdf` (POST)
-Konvertuje Word do PDF (bez extrakce proměnných).
-
-**Request:**
-```json
-{
-  "file": "base64_encoded_file_content"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "pdfBase64": "JVBERi0xLjQK...",
-    "pdfSize": 45632
-  }
+  "status": "accepted"
 }
 ```
 
@@ -146,15 +149,11 @@ async function convertFile() {
   const base64File = fileBuffer.toString('base64');
 
   try {
-    const response = await axios.post('http://localhost:3000/convert-and-extract', {
+    const response = await axios.post('http://localhost:3000/extract-placeholders', {
       file: base64File
     });
 
-    console.log('Extrahované proměnné:', response.data.data.variables);
-    
-    // Uložte PDF
-    const pdfBuffer = Buffer.from(response.data.data.pdfBase64, 'base64');
-    fs.writeFileSync('output.pdf', pdfBuffer);
+    console.log('Extrahovane placeholders:', response.data.data.placeholders);
   } catch (error) {
     console.error('Chyba:', error.message);
   }
@@ -165,11 +164,11 @@ convertFile();
 
 ### cURL
 ```bash
-# Konverze a extrakce
-curl -X POST http://localhost:3000/convert-and-extract \
+# Extrakce placeholders
+curl -X POST http://localhost:3000/extract-placeholders \
   -H "Content-Type: application/json" \
   -d '{"file":"'$(base64 document.docx)'"}' \
-  | jq '.data.variables'
+  | jq '.data.placeholders'
 ```
 
 ### Python
@@ -182,17 +181,12 @@ with open('document.docx', 'rb') as f:
     file_base64 = base64.b64encode(f.read()).decode('utf-8')
 
 response = requests.post(
-    'http://localhost:3000/convert-and-extract',
+  'http://localhost:3000/extract-placeholders',
     json={'file': file_base64}
 )
 
 data = response.json()
-print("Extrahované proměnné:", data['data']['variables'])
-
-# Uložte PDF
-pdf_data = base64.b64decode(data['data']['pdfBase64'])
-with open('output.pdf', 'wb') as f:
-    f.write(pdf_data)
+print("Extrahovane placeholders:", data['data']['placeholders'])
 ```
 
 ---
@@ -219,26 +213,21 @@ Aplikace detekuje tyto vzory proměnných:
 }
 ```
 
-Možné chyby:
+Mozne chyby:
 - `No file provided` - Chybí parametr "file"
-- `LibreOffice conversion error` - LibreOffice není nainstalován nebo neprůběh
-- `Variable extraction failed` - Chyba při parsování dokumentu
+- `LibreOffice conversion error` - LibreOffice neni v image nebo nebyla nalezena binarka `soffice`
+- `Variable extraction failed` - Chyba pri parsovani dokumentu
 
 ---
 
 ## Troubleshooting
 
-### LibreOffice není nalezena
-Zkontrolujte cestu k LibreOffice:
+### LibreOffice neni nalezena
+Nastavte `LIBREOFFICE_PATH` na adresar nebo plnou cestu k binarce `soffice`.
 
-```javascript
-// V converter.js upravte:
-libre.setLibreOfficePath('/path/to/libreoffice');
-```
-
-**Windows default:** `C:\Program Files\LibreOffice\program`
-**Linux:** `/usr/bin`
-**macOS:** `/Applications/LibreOffice.app/Contents/MacOS`
+- Windows: `C:\Program Files\LibreOffice\program` nebo `C:\Program Files\LibreOffice\program\soffice.exe`
+- Linux: `/usr/bin/soffice`
+- macOS: `/Applications/LibreOffice.app/Contents/MacOS/soffice`
 
 ### Velkých souborů (>50MB)
 Límit je nastaven v `server.js`. Pokud potřebujete větší soubory, upravte:

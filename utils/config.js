@@ -44,7 +44,10 @@ const config = {
   logLevel: process.env.LOG_LEVEL || 'info',
   corsEnabled: true,
   corsOrigin: process.env.CORS_ORIGIN || '*',
-  callbackTimeoutMs: Number(process.env.CALLBACK_TIMEOUT_MS || 15000)
+  callbackTimeoutMs: Number(process.env.CALLBACK_TIMEOUT_MS || 15000),
+  extractionAuthToken: process.env.EXTRACTION_AUTH_TOKEN || '',
+  basicAuthUser: process.env.BASIC_AUTH_USER || '',
+  basicAuthPass: process.env.BASIC_AUTH_PASS || ''
 };
 
 /**

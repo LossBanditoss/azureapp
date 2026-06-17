@@ -6,7 +6,8 @@ const {
   convertDocToPdf,
   extractVariables,
   renderTemplate,
-  setLibreOfficePath
+  setLibreOfficePath,
+  detectFileType
 } = require('./utils/converter');
 const { config, logger, ValidationError } = require('./utils/config');
 
@@ -16,7 +17,7 @@ setLibreOfficePath(config.libreOfficePath);
 
 // Middleware
 app.use(express.json({ limit: `${Math.floor(config.maxFileSize / (1024 * 1024))}mb` }));
-app.use(express.urlencoded({ limit: `${Math.floor(config.maxFileSize / (1024 * 1024))}mb` }));
+app.use(express.urlencoded({ extended: true, limit: `${Math.floor(config.maxFileSize / (1024 * 1024))}mb` }));
 
 function decodeBase64File(file) {
   if (!file || typeof file !== 'string') {
@@ -31,6 +32,77 @@ function decodeBase64File(file) {
   }
 
   return buffer;
+}
+
+function isValidTemplateFileName(fileName) {
+  // Letters, numbers, spaces, underscores, hyphens and dots only.
+  return /^[A-Za-z0-9 _.-]+$/.test(fileName || '');
+}
+
+function createPbiError(res, conversionId, statusCode, errorCode, message) {
+  return res.status(statusCode).json({
+    conversionId,
+    status: 'failed',
+    errorCode,
+    message
+  });
+}
+
+function isValidBasicAuth(authorization) {
+  if (!authorization || !authorization.startsWith('Basic ')) {
+    return false;
+  }
+
+  const token = authorization.slice(6);
+  let decoded = '';
+  try {
+    decoded = Buffer.from(token, 'base64').toString('utf8');
+  } catch (error) {
+    return false;
+  }
+
+  const separatorIndex = decoded.indexOf(':');
+  if (separatorIndex < 0) {
+    return false;
+  }
+
+  const user = decoded.slice(0, separatorIndex);
+  const pass = decoded.slice(separatorIndex + 1);
+  return user === config.basicAuthUser && pass === config.basicAuthPass;
+}
+
+function requireExtractionAuth(req, res, next) {
+  const hasBasicAuth = Boolean(config.basicAuthUser && config.basicAuthPass);
+  const hasBearerAuth = Boolean(config.extractionAuthToken);
+
+  if (!hasBasicAuth && !hasBearerAuth) {
+    return next();
+  }
+
+  const authorization = req.headers.authorization || '';
+
+  if (hasBasicAuth) {
+    if (!isValidBasicAuth(authorization)) {
+      return res.status(401).json({
+        status: 'failed',
+        errorCode: 'UNAUTHORIZED',
+        message: 'Missing or invalid basic authorization credentials.'
+      });
+    }
+
+    return next();
+  }
+
+  const expected = `Bearer ${config.extractionAuthToken}`;
+  if (authorization !== expected) {
+    return res.status(401).json({
+      status: 'failed',
+      errorCode: 'UNAUTHORIZED',
+      message: 'Missing or invalid authorization token.'
+    });
+  }
+
+  return next();
 }
 
 async function sendPdfToCallback({ callbackUrl, callbackHeaders, jobId, index, total, pdfBuffer, placeholders }) {
@@ -93,7 +165,7 @@ app.get('/health', (req, res) => {
 });
 
 // Extract placeholders from base64 Word file.
-app.post('/extract-placeholders', async (req, res, next) => {
+app.post('/extract-placeholders', requireExtractionAuth, async (req, res, next) => {
   try {
     const { file } = req.body;
     const fileBuffer = decodeBase64File(file);
@@ -113,8 +185,80 @@ app.post('/extract-placeholders', async (req, res, next) => {
   }
 });
 
+// PBI endpoint: extract variables from DOCX template payload sent by ServiceNow.
+app.post('/api/template/extract-variables', requireExtractionAuth, async (req, res) => {
+  const {
+    conversionId,
+    recordSysId,
+    attachmentSysId,
+    fileName,
+    encodedWord
+  } = req.body || {};
+
+  if (!conversionId || !recordSysId || !attachmentSysId || !fileName || !encodedWord) {
+    return createPbiError(
+      res,
+      conversionId || null,
+      400,
+      'INVALID_REQUEST',
+      'Required fields: conversionId, recordSysId, attachmentSysId, fileName, encodedWord.'
+    );
+  }
+
+  if (!String(fileName).toLowerCase().endsWith('.docx')) {
+    return createPbiError(
+      res,
+      conversionId,
+      400,
+      'INVALID_FILE_TYPE',
+      'Only .docx files are supported for template extraction.'
+    );
+  }
+
+  if (!isValidTemplateFileName(String(fileName))) {
+    return createPbiError(
+      res,
+      conversionId,
+      400,
+      'INVALID_FILE_NAME',
+      'File name contains unsupported characters.'
+    );
+  }
+
+  try {
+    const fileBuffer = decodeBase64File(encodedWord);
+    const detectedType = detectFileType(fileBuffer);
+    if (detectedType !== 'docx') {
+      return createPbiError(
+        res,
+        conversionId,
+        400,
+        'INVALID_DOCX_CONTENT',
+        'Decoded content is not a valid DOCX document.'
+      );
+    }
+
+    const variables = await extractVariables(fileBuffer);
+
+    return res.status(200).json({
+      conversionId,
+      status: 'success',
+      variables
+    });
+  } catch (error) {
+    logger.error(`Extraction failed for conversionId ${conversionId}`, error);
+    return createPbiError(
+      res,
+      conversionId,
+      500,
+      'DOCX_PROCESSING_FAILED',
+      'The uploaded Word document could not be processed.'
+    );
+  }
+});
+
 // Accept batch generation and process asynchronously.
-app.post('/generate-pdf-batch', async (req, res, next) => {
+app.post('/generate-pdf-batch', requireExtractionAuth, async (req, res, next) => {
   try {
     const { file, data, callbackUrl, callbackHeaders } = req.body;
     const fileBuffer = decodeBase64File(file);
