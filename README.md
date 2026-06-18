@@ -1,3 +1,78 @@
+### Reliable local callback test using two PowerShell windows
+Run the listener in one PowerShell window and the sender in another. This avoids `HttpListener` disposal issues inside background jobs.
+
+#### 1) Listener script (`callback-listener.ps1`)
+```powershell
+$prefix = "http://127.0.0.1:3001/"
+$outputFile = "C:\Users\z004z11f\Desktop\output.pdf"
+
+$listener = New-Object System.Net.HttpListener
+$listener.Prefixes.Add($prefix)
+$listener.Start()
+Write-Host "Callback listener started on $prefix"
+
+try {
+  $context = $listener.GetContext()
+  $reader = New-Object System.IO.StreamReader($context.Request.InputStream, $context.Request.ContentEncoding)
+  $body = $reader.ReadToEnd()
+  $reader.Close()
+
+  Write-Host "Callback received:"
+  Write-Host $body
+
+  $json = $body | ConvertFrom-Json
+  if ($json.pdfBase64) {
+  $pdfBytes = [Convert]::FromBase64String($json.pdfBase64)
+  [System.IO.File]::WriteAllBytes($outputFile, $pdfBytes)
+  Write-Host "Saved PDF to $outputFile"
+  }
+
+  $responseText = '{"status":"ok"}'
+  $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseText)
+  $context.Response.ContentType = "application/json"
+  $context.Response.ContentLength64 = $buffer.Length
+  $context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
+  $context.Response.OutputStream.Close()
+}
+finally {
+  $listener.Stop()
+}
+```
+
+#### 2) Sender script (`send-batch.ps1`)
+```powershell
+$apiBase = "http://127.0.0.1:3000"
+$templatePath = "C:\Users\z004z11f\Desktop\DEMOCFBriefPeterundFadi.docx"
+$callbackUrl = "http://127.0.0.1:3001/"
+
+$bytes = [System.IO.File]::ReadAllBytes($templatePath)
+$templateB64 = [Convert]::ToBase64String($bytes)
+$pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("testuser:test1234"))
+
+$body = @{
+  file = $templateB64
+  data = @(
+  @{ System_Account_Manager = "Peter" }
+  )
+  callbackUrl = $callbackUrl
+  callbackHeaders = @{}
+} | ConvertTo-Json -Depth 10
+
+$response = Invoke-RestMethod -Method Post `
+  -Uri "$apiBase/generate-pdf-batch" `
+  -Headers @{
+  Authorization = "Basic $pair"
+  "Content-Type" = "application/json"
+  } `
+  -Body $body
+
+$response | ConvertTo-Json -Depth 10
+```
+
+#### Run order
+1. Start `callback-listener.ps1` in PowerShell window A.
+2. Run `send-batch.ps1` in PowerShell window B.
+3. Wait for `output.pdf` to appear on the desktop.
 # Word to PDF Converter & Variable Extractor
 
 Node.js aplikace pro extrakci placeholders z Word dokumentu a asynchronni generovani PDF z DOCX sablony.

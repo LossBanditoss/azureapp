@@ -34,12 +34,10 @@ function setLibreOfficePath(libreOfficePath) {
  */
 async function convertDocToPdf(fileBuffer) {
   return new Promise((resolve, reject) => {
-    // Determine file extension
-    const ext = detectFileType(fileBuffer);
     const options = sofficeBinaryPaths.length ? { sofficeBinaryPaths } : undefined;
     
     try {
-      libre.convert(fileBuffer, `.${ext}`, '.pdf', options, (err, result) => {
+      libre.convertWithOptions(fileBuffer, 'pdf', undefined, options, (err, result) => {
         if (err) {
           reject(new Error(`LibreOffice conversion error: ${err.message}`));
         } else {
@@ -60,15 +58,8 @@ async function convertDocToPdf(fileBuffer) {
  */
 async function extractVariables(fileBuffer) {
   try {
-    // Convert Buffer to ArrayBuffer for mammoth
-    const arrayBuffer = new ArrayBuffer(fileBuffer.length);
-    const view = new Uint8Array(arrayBuffer);
-    for (let i = 0; i < fileBuffer.length; i++) {
-      view[i] = fileBuffer[i];
-    }
-
     // Extract text content from Word document
-    const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
+    const result = await mammoth.extractRawText({ buffer: fileBuffer });
     const text = result.value;
 
     // Extract variables with different patterns
